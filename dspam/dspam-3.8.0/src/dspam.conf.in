@@ -1,0 +1,68 @@
+# host config
+MySQLServer                     localhost
+MySQLWriteServer                localhost
+MySQLMemcachedServers           localhost:11211
+MySQLMemcachedKeyVersion        3
+MySQLMemcachedKeyExpiration     1800
+MySQLMemcachedTimeout           0.25
+
+# tokenization and probability settings
+TrainingMode                    toe
+Algorithm                       graham
+Tokenizer                       chain
+PValue                          bcr
+ProcessorURLContext             on
+ProcessorBias                   on
+
+# output controls
+OnFail                          error
+Preference                      "signatureLocation=headers"
+Preference                      "showFactors=on"
+Preference                      "spamAction=deliver"
+
+# mysql settings
+MySQLPort                       3306
+MySQLUser                       dspam
+MySQLPass                       dspam
+MySQLDb                         dspam
+MySQLCompress                   true
+MySQLWritePort                  3306
+MySQLWriteUser                  dspam
+MySQLWritePass                  dspam
+MySQLWriteDb                    dspam
+MySQLCompress                   true
+MySQLReadSignaturesFromWriteDb  on
+MySQLConnectionCache            24
+
+# DLMTP settings
+ServerPort                      24
+ServerQueueSize                 32
+ServerPID                       /var/run/spam/dspam.pid
+ServerMode                      dspam
+ServerPass.Relay1               "YourPasswordHere"
+ServerDomainSocketPath          "/tmp/dspam.sock"
+ServerDomainSymlink             on
+
+# logging
+Notifications                   off
+SystemLog                       off
+UserLog                         off
+
+# misc
+Home                            @dspam_home@
+StorageDriver                   @libdir@/@storage_driver@
+TrustedDeliveryAgent            "@delivery_agent@"
+Trust                           comet
+TrainPristine                   on
+
+# unused by serotype
+PurgeSignatures                 14
+PurgeNeutral                    90
+PurgeUnused                     90
+PurgeHapaxes                    30
+PurgeHits1S	                    15
+PurgeHits1I	                    15
+LocalMX                         127.0.0.1
+WebStats                        off
+Opt                             out
+TestConditionalTraining         on

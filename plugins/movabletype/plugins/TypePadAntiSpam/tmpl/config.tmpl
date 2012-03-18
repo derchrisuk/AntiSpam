@@ -1,0 +1,22 @@
+<div class="field field-left-label pkg">
+    <div class="field-inner">
+        <div class="field-header">
+            <label for="tpas_weight"><__trans phrase="Junk Score Weight"></label>
+        </div>
+        <div class="field-content">
+            <select id="tpas_weight" name="weight">
+                <option value="1" <mt:if name="weight_1">selected="selected"</mt:if>>1 - <__trans phrase="Least Weight"></option>
+                <option value="2" <mt:if name="weight_2">selected="selected"</mt:if>>2</option>
+                <option value="3" <mt:if name="weight_3">selected="selected"</mt:if>>3</option>
+                <option value="4" <mt:if name="weight_4">selected="selected"</mt:if>>4</option>
+                <option value="5" <mt:if name="weight_5">selected="selected"</mt:if>>5</option>
+                <option value="6" <mt:if name="weight_6">selected="selected"</mt:if>>6</option>
+                <option value="7" <mt:if name="weight_7">selected="selected"</mt:if>>7</option>
+                <option value="8" <mt:if name="weight_8">selected="selected"</mt:if>>8</option>
+                <option value="9" <mt:if name="weight_9">selected="selected"</mt:if>>9</option>
+                <option value="10" <mt:if name="weight_10">selected="selected"</mt:if>>10 - <__trans phrase="Most Weight"></option>
+            </select>
+            <p class="hint"><__trans phrase="Comments and TrackBacks receive a junk score between -10 (definitely spam) and +10 (definitely not spam). This setting allows you to control the weight of the TypePad AntiSpam rating relative to other filters you may have installed to help you filter comments and TrackBacks."></p>
+        </div>
+    </div>
+</div>

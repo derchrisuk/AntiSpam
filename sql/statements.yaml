@@ -1,0 +1,520 @@
+---
+sql:
+    log:
+
+        _init_create_param_dim_table: |+4
+
+            -- serialized client-provided parameters. kept separate from request log so that params (which take up all the space) can be archived/dropped separately.
+            CREATE TABLE IF NOT EXISTS param_dim_CURRENTDATE (
+                param_dim_id    INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                params          BLOB                        -- nfrozen & zlib-compressed hash of client-supplied params
+            ) ENGINE=InnoDB
+
+        _init_create_factors_dim_table: |+4
+
+            -- serialized backend probability factors contributing to message score
+            CREATE TABLE IF NOT EXISTS factors_dim_CURRENTDATE (
+                factors_dim_id  INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                factors         BLOB                        -- nfrozen & zlib-compressed hash of factor/prob pairs
+            ) ENGINE=InnoDB
+
+        _init_create_ext_meta_table: |+4
+
+            CREATE TABLE IF NOT EXISTS ext_meta_CURRENTDATE (
+                request_log_id  BIGINT UNSIGNED NOT NULL,   -- the request this annotation applies to
+                meta_type_id    SMALLINT UNSIGNED NOT NULL, -- type of metadata
+
+                -- which of these is used depends on the meta_type
+                val_boolean     BOOLEAN,
+                val_int         INTEGER,
+                val_float       FLOAT,
+                val_date        TIMESTAMP,
+                val_string      TEXT,
+                val_blob        BLOB,
+
+                PRIMARY KEY     (request_log_id, meta_type_id)
+            ) ENGINE=InnoDB
+
+        _init_create_request_log_table: |+4
+
+            CREATE TABLE IF NOT EXISTS request_log_CURRENTDATE (
+                request_log_id  BIGINT UNSIGNED NOT NULL PRIMARY KEY, -- app-generated yuid for the request
+
+                action_dim_id   SMALLINT UNSIGNED NOT NULL,
+                api_key_dim_id  INT UNSIGNED NOT NULL,
+                ip_dim_id       INT UNSIGNED NOT NULL,      -- ip of client
+                user_ip_dim_id  INT UNSIGNED NULL,          -- ip of comment submitter
+                worker_dim_id   INT UNSIGNED NOT NULL,
+                type_dim_id     INT UNSIGNED NULL,
+                date_id         SMALLINT UNSIGNED NOT NULL, -- date_id of start
+
+                param_dim_id    INT UNSIGNED NULL,
+                factors_dim_id  INT UNSIGNED NULL,
+
+                log_level       TINYINT UNSIGNED NOT NULL,  -- log level for this event; determines contents of params
+                success         BOOLEAN NOT NULL,           -- whether the request was "successful" from app's POV
+                rating          TINYINT UNSIGNED,           -- defined in SpamSvc::Connector: [0=error, 1=ham, 2=spam, 3=unknown]
+                confidence      FLOAT,                      -- [0.0-1.0], for classifications
+                trained_backend BOOLEAN NOT NULL,           -- for training requests, true if was sent to backend
+
+                error           VARCHAR(255),               -- error string
+                start_time      BIGINT UNSIGNED NOT NULL,   -- ms since epoch
+                end_time        BIGINT UNSIGNED NOT NULL,   -- ms since epoch
+
+                INDEX           (date_id),
+                INDEX           (action_dim_id),
+                INDEX           (api_key_dim_id),
+                INDEX           (ip_dim_id),
+                INDEX           (user_ip_dim_id),
+                INDEX           (type_dim_id),
+                INDEX           (rating)
+            ) ENGINE=InnoDB
+
+        insert_params: |+4
+
+            INSERT
+              INTO  param_dim_CURRENTDATE
+                    (params)
+            VALUES  (?)
+
+        insert_factors: |+4
+
+            INSERT
+              INTO  factors_dim_CURRENTDATE
+                    (factors)
+            VALUES  (?)
+
+        log_request: |+4
+
+            INSERT
+              INTO  request_log_CURRENTDATE
+
+                    (
+                        request_log_id,
+                        action_dim_id,
+                        api_key_dim_id,
+                        ip_dim_id,
+                        user_ip_dim_id,
+                        date_id,
+                        worker_dim_id,
+                        log_level,
+                        type_dim_id,
+                        param_dim_id,
+                        factors_dim_id,
+                        success,
+                        rating,
+                        confidence,
+                        error,
+                        start_time,
+                        end_time
+                    )
+
+            VALUES  (
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?
+                    )
+
+        set_meta_boolean: |+4
+
+            REPLACE
+               INTO ext_meta_GIVENDATE
+
+                    (request_log_id, meta_type_id, val_boolean)
+             VALUES (?, ?, ?)
+
+        set_meta_int: |+4
+
+            REPLACE
+               INTO ext_meta_GIVENDATE
+
+                    (request_log_id, meta_type_id, val_int)
+             VALUES (?, ?, ?)
+
+        set_meta_float: |+4
+
+            REPLACE
+               INTO ext_meta_GIVENDATE
+
+                    (request_log_id, meta_type_id, val_float)
+             VALUES (?, ?, ?)
+
+        set_meta_date: |+4
+
+            REPLACE
+               INTO ext_meta_GIVENDATE
+
+                    (request_log_id, meta_type_id, val_date)
+             VALUES (?, ?, ?)
+
+        set_meta_string: |+4
+
+            REPLACE
+               INTO ext_meta_GIVENDATE
+
+                    (request_log_id, meta_type_id, val_string)
+             VALUES (?, ?, ?)
+
+        set_meta_blob: |+4
+
+            REPLACE
+               INTO ext_meta_GIVENDATE
+
+                    (request_log_id, meta_type_id, val_blob)
+             VALUES (?, ?, ?)
+
+        get_api_key_by_id: |+4
+
+             SELECT api_key
+
+               FROM api_key_dim
+
+               JOIN request_log_GIVENDATE
+              USING (api_key_dim_id)
+
+              WHERE request_log_id  = ?
+
+        update_trained_backend: |+4
+            
+            UPDATE request_log_CURRENTDATE
+               SET trained_backend  = ?
+             WHERE request_log_id   = ?
+
+        update_id_date_map: |+4
+
+             INSERT
+               INTO id_date_map
+
+                    (
+                        request_log_id,
+                        date_id
+                    )
+
+             VALUES (
+                        ?,
+                        ?
+                    )
+
+        get_date_by_id: |+4
+
+             SELECT the_day
+
+               FROM date_dim
+
+               JOIN id_date_map
+              USING (date_id)
+
+              WHERE request_log_id  = ?
+
+        get_action_ids: |+4
+
+            SELECT  action,
+                    action_dim_id
+            FROM    action_dim
+
+        get_date_id: |+4
+
+            SELECT  date_id
+              FROM  date_dim
+             WHERE  date_dim.the_day = ?
+
+        get_api_key_id: |+4
+
+            SELECT  api_key_dim_id
+              FROM  api_key_dim
+             WHERE  api_key = ?
+
+        insert_api_key_id: |+4
+
+            INSERT
+            IGNORE
+              INTO  api_key_dim
+                    (api_key)
+            VALUES  (?)
+
+        get_ip_id: |+4
+
+            SELECT  ip_dim_id
+              FROM  ip_dim
+             WHERE  ip = ?
+
+        insert_ip_id: |+4
+
+            INSERT
+            IGNORE
+              INTO  ip_dim
+                    (ip)
+            VALUES  (?)
+
+        get_worker_id: |+4
+
+            SELECT  worker_dim_id
+              FROM  worker_dim
+             WHERE  worker = ?
+
+        insert_worker_id: |+4
+
+            INSERT
+            IGNORE
+              INTO  worker_dim
+                    (worker)
+            VALUES  (?)
+
+        get_type_id: |+4
+
+            SELECT  type_dim_id
+              FROM  type_dim
+             WHERE  type = ?
+
+        insert_type_id: |+4
+
+            INSERT
+            IGNORE
+              INTO  type_dim
+                    (type)
+            VALUES  (?)
+
+        get_last_insert_id: |+4
+
+            SELECT  LAST_INSERT_ID()
+
+    client:
+
+        # update position constants in Client.pm if changing selected fields from fetch_key_data
+        fetch_key_data: |+4
+
+             SELECT client_dim_id,
+                    api_key,
+                    special_class_id,
+                    backend_id,
+                    last_ip,
+                    trust,
+                    enabled,
+                    may_query,
+                    may_train_spam,
+                    may_train_ham,
+                    may_follow_link,
+                    send_confidence
+             
+               FROM client_dim
+             
+              WHERE api_key = ?
+
+        fetch_whitelisted_domain: |+4
+
+             SELECT domain
+
+               FROM domain_whitelist
+
+              WHERE domain = ?
+
+        fetch_blacklisted_domain: |+4
+
+             SELECT domain
+
+               FROM domain_blacklist
+
+              WHERE domain = ?
+
+        create_key_data: |+4
+
+             INSERT
+               INTO client_dim
+
+                    (
+                        backend_id,
+                        api_key,
+                        special_class_id,
+                        trust,
+                        trust_mutable,
+                        enabled,
+                        may_query,
+                        may_train_spam,
+                        may_train_ham,
+                        may_follow_link,
+                        send_confidence,
+                        num_queries,
+                        num_spam,
+                        num_ham,
+                        first_contact,
+                        last_contact,
+                        last_ip
+                    )
+
+             VALUES (
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        ?,
+                        0,
+                        0,
+                        0,
+                        NOW(),
+                        NOW(),
+                        ?
+                    )
+
+        update_contact_time: |+4
+
+             UPDATE client_dim
+                SET last_contact    =   NOW()
+              WHERE client_dim_id   =   ?
+
+        update_contact_ip: |+4
+
+             UPDATE client_dim
+                SET last_ip         =   ?
+              WHERE client_dim_id   =   ?
+
+        increment_count_of_comment-check: |+4
+
+             UPDATE client_dim
+                SET num_queries     =   num_queries + 1
+              WHERE client_dim_id   =   ?
+
+        increment_count_of_submit-ham: |+4
+
+             UPDATE client_dim
+                SET num_ham         =   num_ham + 1
+              WHERE client_dim_id   =   ?
+
+        increment_count_of_submit-spam: |+4
+
+             UPDATE client_dim
+                SET num_spam        =   num_spam + 1
+              WHERE client_dim_id   =   ?
+
+        increment_count_of_verify-key: |+4
+
+             UPDATE client_dim
+                SET num_verified    =   num_verified + 1
+              WHERE client_dim_id   =   ?
+
+        fetch_uri_ratings: |+4
+
+             SELECT cd.client_dim_id,
+                    TIMESTAMPDIFF(SECOND, NOW(), uf.date) AS age,
+                    uf.disposition,
+                    cd.api_key
+             
+               FROM url_dim     ud
+             
+               JOIN url_fact    uf
+                 ON uf.url_dim_id   =   ud.url_dim_id
+             
+               JOIN client_dim  cd
+                 ON cd.client_dim_id =  uf.client_dim_id
+      
+              WHERE signature       =   ?
+                AND disposition     IN  ('spam', 'ham')
+
+              LIMIT 1000
+
+        fetch_uri_id: |+4
+
+             SELECT url_dim_id
+               FROM url_dim
+              WHERE signature       =   ?
+
+        insert_uri: |+4
+
+             INSERT
+             IGNORE
+               INTO url_dim
+                    (signature)
+             VALUES (?)
+
+        insert_uri_rating: |+4
+
+             INSERT
+               INTO url_fact
+                    (
+                        url_dim_id,
+                        client_dim_id,
+                        disposition,
+                        accepted,
+                        date,
+                        date_id
+                    )
+             
+             SELECT ?,
+                    ?,
+                    ?,
+                    ?,
+                    NOW(),
+                    date_dim.date_id
+             
+               FROM date_dim
+              WHERE DATE(NOW())     =   date_dim.the_day
+
+        # fetch_trust and update_trust are looked up via api_key because that's how we key the memcache lookup
+        fetch_trust: |+4
+
+             SELECT trust,
+                    trust_mutable
+               FROM client_dim
+              WHERE api_key         =   ?
+
+        update_trust: |+4
+
+             UPDATE client_dim
+                SET trust           =   ?
+              WHERE api_key         =   ?
+
+        audit_trust_update: |+4
+
+             INSERT
+               INTO trust_audit_history
+                    (
+                        date,
+                        user_id,
+                        user_trust,
+                        peer_id,
+                        peer_trust,
+                        ratio
+                    )
+
+             SELECT NOW(),
+                    ?,
+                    ?,
+                    peer.client_dim_id,
+                    ?,
+                    ?
+
+               FROM client_dim peer
+
+              WHERE peer.api_key = ?
+
+        add_special_class_id: |+4
+
+             INSERT
+               INTO special_class
+                    (name)
+             VALUES (?)
+
+        get_special_class_id: |+4
+
+             SELECT special_class_id
+               FROM special_class
+              WHERE name = ?

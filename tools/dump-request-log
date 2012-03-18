@@ -1,0 +1,241 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use File::Basename;
+use FindBin '$Bin';
+use Getopt::Long;
+use Net::Akismet::Compat;
+use SpamSvc::Serotype::Log::Finder;
+use YAML::Syck qw/ Dump /;
+
+sub usage {
+    my $me = basename($0);
+    print <<END_HELP;
+Usage: $me [options] <apikey|clientspec>
+Options:
+  --log-db=<host>
+      Specifies Serotype log database host to query.
+  --client-db=<host>
+      Specifies Serotype log database host to query.
+
+  --date=<date>
+      Limits dump to the given day; more than one day may be given in multiple --date's.
+  --start=<date>
+  --end=<date>
+      Instead of listing multiple --date's, an range may be given with --start and --end.
+
+  --id=<numeric_id>
+  --type=<comment|trackback|...>
+  --body=<pattern>
+  --author=<pattern>
+  --email=<pattern>
+  --url=<pattern>
+  --permalink=<pattern>
+      Return only those queries matching the given patterns.
+
+  --params
+      Include client-provided query parameters if available.
+  --factors
+      Include spam-classification factors if available.
+  --ext-meta
+      Include post-hoc, client-provided metadata if available. Requires --serotype-config
+  --meta-only
+      Implies --no-params --no-factors --no-ext-meta.
+
+  --serotype-config=<file>
+    Path to serotype config file used to resolve metadata definitions.
+
+  --factor=<factor>
+      Require that the given factor be included in the rating.
+
+  --skip-ok
+      Return only queries which resulted in errors.
+
+  --training-only
+    Only process ham and spam training events.
+  --accepted-training-only
+    Only process ham and spam training events which were forwarded to the backend.
+
+  --[no-]unused-params
+    Don't display unused params fields, e.g. server \%ENV noise.
+
+  --limit=<num>
+      Return only <num> records.
+  --count
+      Return only the number of matching records.
+  --by-date
+      Sort by date instead of by ID as per default.
+
+  --code=<perl>
+      Run perl code on the \$query object for each matching record. Dumping of
+      the record is skipped if the code snippet returns a defined-but-0 value.
+
+  --[no]-dump
+      Output YAML dump of requests (default).
+  --debug
+      Display generated SQL statement.
+  --pretend
+      Generate SQL statement but don't execute final SELECT.
+END_HELP
+    exit;
+}
+
+my %options = (
+    'log-db=s'                  => \(my $log_host = 'localhost'),
+    'client-db=s'               => \(my $client_host = 'localhost'),
+
+    'client=s'                  => \(my $client_spec),
+
+    'start=s'                   => \(my $start),
+    'end=s'                     => \(my $end),
+    'date=s@'                   => \(my $search_dates),
+
+    'i|id=i'                    => \(my $search_id),
+    'type=s'                    => \(my $search_type),
+    'action=s'                  => \(my $search_action),
+    'ip=s'                      => \(my $search_ip),
+    'rating=s'                  => \(my $search_rating),
+    'spam!'                     => \(my $spam_only),
+    'ham!'                      => \(my $ham_only),
+    'min-confidence=s'          => \(my $min_confidence),
+    'max-confidence=s'          => \(my $max_confidence),
+
+    'body=s'                    => \(my $body_pattern),
+    'email=s'                   => \(my $email_pattern),
+    'author=s'                  => \(my $author_pattern),
+    'url=s'                     => \(my $url_pattern),
+    'permalink=s'               => \(my $permalink_pattern),
+
+    'params!'                   => \(my $params = 1),
+    'factors!'                  => \(my $factors = 1),
+    'ext-meta!'                 => \(my $ext_meta = 0),
+
+    'factor=s@'                 => \(my $required_factors),
+
+    'meta-only!'                => \(my $meta_only),
+
+    'training-only!'            => \(my $training_only),
+    'accepted-training-only!'   => \(my $accepted_training_only),
+
+    'unused-params!'            => \(my $unused_params = 0),
+
+    'skip-agreed!'              => \(my $skip_agreed),
+    'skip-ok!'                  => \(my $skip_ok),
+
+    'today!'                    => \(my $today),
+    'yesterday!'                => \(my $yesterday),
+
+    'count!'                    => \(my $count_only),
+    'limit=i'                   => \(my $limit),
+    'by-date!'                  => \(my $order_by_date),
+
+    'code=s'                    => \(my $code),
+
+    'help!'                     => \(my $help),
+
+    'dump!'                     => \(my $dump = 1),
+    'g|debug!'                  => \(my $debug),
+    'pretend!'                  => \(my $pretend),
+);
+
+GetOptions(%options) || usage;
+
+$client_spec = shift @ARGV if !defined $client_spec && @ARGV;
+
+if ($client_spec && $client_spec =~ /^\d+$/ && $client_spec > 60000000000000000) {
+    $search_id = $client_spec;
+    $client_spec = undef;
+}
+elsif ($client_spec && $client_spec =~ /^[a-zA-Z0-9+\/]+=$/) {
+    if (qx{crypt-request-id $client_spec} =~ /\s(\d+)$/m && $1 > 60000000000000000) {
+        $search_id = $1;
+        $client_spec = undef;
+    }
+}
+
+usage if $help;
+
+my %used_params = map {$_ => 1} qw/ article_date blog comment_author comment_author_email comment_author_url comment_content comment_type permalink referrer user_agent user_ip /;
+
+push @$search_dates, 'today' if $today;
+push @$search_dates, 'yesterday' if $yesterday;
+
+$search_rating = 1 if $ham_only  || lc $search_rating eq 'ham';
+$search_rating = 2 if $spam_only || lc $search_rating eq 'spam';
+
+$factors = $params = 0 if $meta_only;
+
+if ($count_only && $code) {
+    # need the callback to fire
+    $count_only = 0;
+    $dump = 0;
+}
+
+my $finder = SpamSvc::Serotype::Log::Finder->new(
+    log_host            => $log_host,
+    client_host         => $client_host,
+    start               => $start,
+    end                 => $end,
+    dates               => $search_dates,
+    id                  => $search_id,
+    user_ip             => $search_ip,
+    type                => $search_type,
+    action              => $search_action,
+    rating              => $search_rating,
+    min_confidence      => $min_confidence,
+    max_confidence      => $max_confidence,
+    body                => $body_pattern,
+    email               => $email_pattern,
+    permalink           => $permalink_pattern,
+    author              => $author_pattern,
+    url                 => $url_pattern,
+    limit               => $limit,
+    ext_meta            => $ext_meta,
+    params              => $params,
+    factors             => $factors,
+    debug               => $debug,
+    pretend             => $pretend,
+    skip_ok             => $skip_ok,
+    count_only          => $count_only,
+    order_by_date       => $order_by_date,
+    required_factors    => $required_factors,
+    training_only       => $training_only,
+);
+
+if (defined $client_spec) {
+    if (!defined $finder->resolve_client_spec($client_spec)) {
+        die "unknown client $client_spec\n";
+    }
+}
+
+exit if $pretend;
+
+print "---\n";
+$YAML::Syck::Headless = 1;
+my $n = 0;
+my $code_count = 0;
+my $count = $finder->find(sub {
+    my $query = shift;
+
+    if ($code) {
+        my $ret = eval $code;
+        return if defined $ret && !$ret;
+        $code_count++;
+    }
+
+    unless ($unused_params) {
+        delete $query->{params}{$_}
+            for grep { !$used_params{$_} } keys %{ $query->{params} };
+    }
+
+    print Dump([$query]) if $dump;
+});
+
+if ($count_only) {
+    print "$count\n";
+}
+elsif ($code_count) {
+    print "$code_count\n";
+}

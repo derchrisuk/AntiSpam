@@ -1,0 +1,61 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use Scalar::Util 'looks_like_number';
+use SpamSvc::Serotype::Config;
+use SpamSvc::Serotype::Util qw/decrypt_from_base64 encrypt_to_base64/;
+
+sub usage {
+    my $me = $0;
+    $me =~ s,.*/,,;
+    warn "usage: $me <id>\n";
+    exit 0;
+}
+
+GetOptions(
+    'config=s'      => \(my $config_file),
+    'encrypt!'      => \(my $encrypt),
+    'decrypt!'      => \(my $decrypt),
+    'help!'         => \(my $help),
+    'id=s'          => \(my $id),
+    'key=s'         => \(my $key),
+    'debug!'        => \(my $debug),
+    'verbose!'      => \(my $verbose),
+) || usage;
+
+$decrypt = 1 if !defined $encrypt && !defined $decrypt;
+
+die "must use -e or -d" if $encrypt && $decrypt;
+
+$id = shift @ARGV if !defined $id && @ARGV;
+
+usage unless defined $id;
+
+if (!$key) {
+    my $config = SpamSvc::Serotype::Config::load_config($config_file);
+    $key = $config->{id_crypto_key};
+}
+
+my $bin_key = pack 'H*', $key;
+
+if ($encrypt) {
+    warn "$id doesn't look right, but ok...\n" unless looks_like_orig_id($id);
+    my $enc = SpamSvc::Serotype::Util::encrypt_to_base64($bin_key, $id);
+    printf "encrypt(%s) = '%s'\n", $id, $enc;
+}
+else {
+    my $dec = SpamSvc::Serotype::Util::decrypt_from_base64($bin_key, $id);
+    printf "decrypt('%s') = %s\n", $id, $dec;
+    warn "the key $key is probably incorrect\n" unless looks_like_orig_id($dec);
+}
+
+sub looks_like_orig_id {
+    my $n = shift;
+    return
+        looks_like_number($n) &&
+        $n > 60000000000000000 &&
+        $n < 80000000000000000;
+}

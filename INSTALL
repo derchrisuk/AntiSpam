@@ -1,0 +1,154 @@
+This document describes the tasks necessary to run an installation of the
+Serotype package. It assumes moderate familiarity with blog server software,
+UNIX-like system configuration and software installation tasks.
+
+1. Dependencies
+
+  The Serotype package requires perl 5.8.5 (www.perl.org) or greater and the
+  following non-core Perl library modules from CPAN (search.cpan.org). These
+  may be installed from CPAN with the provided install.sh script. Your OS
+  distribution may also provide packages for some of them.
+
+    * Cache::Memcached
+    * Cache::Memcached::GetParserXS
+    * Cache::Memory
+    * Crypt::Rijndael
+    * Date::Manip
+    * DBD::mysql
+    * Digest::SHA1
+    * Email::Valid
+    * Encode::Detect
+    * Encode::HanExtra
+    * Encode::JIS2K
+    * IO::AIO
+    * LWP::UserAgent
+    * LWPx::ParanoidAgent
+    * Net::Akismet
+    * Perlbal
+    * Perlbal::XS::HTTPHeaders
+    * Readonly
+    * Readonly::XS
+    * Sys::Load
+    * Sys::MemInfo
+    * URI::Find
+    * URI::Find::Schemeless
+    * YAML::Syck
+
+    * CGI::Deurl::XS (not on CPAN, included in ext-modules/CGI-Deurl-XS)
+
+  Several of these packages have dependencies of their own which will also be
+  installed by the cpan installer.
+
+  The following non-Perl packages are also required:
+
+    * DSPAM >= 3.8.0 (http://dspam.nuclearelephant.com/).
+      - Use (at least) the following configuration options:
+        --enable-virtual-users --enable-daemon --disable-trusted-user-security
+        --with-storage-driver=mysql_drv --with-dspam-mode=755
+
+    * MySQL >= 5 (http://dev.mysql.com/downloads/)
+      - Community Server works fine.
+
+    * memcached >= 1.2 (http://www.danga.com/memcached/)
+
+2. Setup 
+
+  i) Configure Serotype
+
+    The default included configuration may not fit your needs exactly. For
+    example, it listens for requests on port 23459 to avoid conflicting with
+    any webserver running in parallel. Things most likely to need attention:
+
+    * conf/dspam.conf: 
+      - Expects to find dspam's MySQL driver at /usr/lib64/libmysql_drv.so
+      - Expects /var/dspam to be writable
+      - Expects to be run as user 'dspam'
+
+    * conf/perlbal.conf
+      - Serotype listens on all interfaces on port 23459. This can be changed
+        on the 'SET listen' line.
+
+    * Shared services:
+      - The run script attempts to run daemonized instances of various
+        services, which listen by default for connections in these places:
+          dspam: /tmp/dspam.sock
+          gearmand: TCP port 7003
+          yuidd: TCP port 9001
+          memcached: TCP port 11211
+
+    You will also need to copy conf/dspam.conf over your installed dspam.conf,
+    likely found in /etc/dspam.conf or /usr/local/etc/dspam.conf.
+
+  ii) Initialize database
+
+    Make sure mysqld is running and run the included setup.sh. This will create
+    the necessary databases and tables for Serotype and DSPAM. If your mysqld
+    is not running locally, modify the MYSQL command line in the script as
+    appropriate.
+
+  iii) Configure DNS
+
+    The server you will run Serotype on must be configured with a wildcard DNS
+    entry for all subdomains (this is how API keys are communicated in the
+    Akismet API). The details of this step are specific to your DNS system.
+
+  iv) Start Serotype
+
+    The included bare-bones run.sh will start the pieces of the framework. For
+    ease of starting and stopping you will probably want to adapt it according
+    to your OS distribution's service startup scheme.
+
+  v) Configure blog server/CMS software
+
+    Modify the antispam client plugin of your blog software or CMS to point to
+    your host. For instance, if you've installed Serotype on a host name
+    serotype.example.com, you would replace all instances of
+    "api.antispam.typepad.com" in the TypePad AntiSpam plugin for WordPress
+    with "serotype.example.com". The client would then make requests to e.g.
+    yourkey1234.serotype.example.com.
+
+  vi) Initialize your API key(s)
+
+    Serotype accepts requests from any API key, even ones it hasn't seen
+    before. That means you can use an existing Akismet or TypePad AntiSpam API
+    key if you like, or make one up. However, new API keys are not
+    automatically allowed to train the spam database. To fully initialize any
+    keys you will be using, use the provided script tools/client-lookup, e.g.
+
+      > tools/client-lookup --bless me123
+
+  vii) Bootstrap database [optional]
+
+    At this point the system is operational but has no knowledge of what
+    constitutes spam. Everyday use of your blog software will eventually teach
+    the system (and keep it up to date over time), but this process can be
+    slow to provide acceptable results.
+    
+    However, if you have an existing body of spam and legitimate content, you
+    may manually bootstrap the system with it. As the details of exporting your
+    content are specific to each blog platform, Serotype does not currently
+    include complete tools for bootstrapping. Scripting training is fairly
+    straightforward, though; simply execute a command like the following (see
+    tools/query-example) for each spam or ham (legitimate) piece of data you
+    have:
+
+    # train comment as legitimate
+    > echo 'Nice blog, Mary! -Joe' | \
+        tools/query-example --server=serotype.example.com --key=me123 \
+          --ip=1.2.3.4 --author='Joe Commenter' --email=joe@example.com \
+          --url=http://example.com --ham
+
+    # train comment as spam
+    > echo 'fr33 viag4a c1alis' | \
+        tools/query-example --server=serotype.example.com --key=me123 \
+          --ip=2.2.2.2 --author=zxyzz --email=pills@porn.com \
+          --url=http://freeteens.com --spam
+
+3. Use
+
+  Once Serotype is running, further learning should be accomplished
+  automatically through client plugins. For most plugins, administrative
+  publishing of comments or other assets will submit the content as ham for
+  training. Conversely, administratively marking assets as spam or junk will
+  report them back to the server as such. Provided the API key in use has been
+  blessed as in [2.vi], Serotype will learn from your feedback.

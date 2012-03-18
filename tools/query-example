@@ -1,0 +1,132 @@
+#!/usr/bin/perl
+use strict;
+use warnings;
+
+use Getopt::Long;
+use Net::Akismet::Compat;
+use YAML::Syck;
+
+GetOptions(
+    'query!'        => \(my $query          = 0),
+    'spam!'         => \(my $spam           = 0),
+    'ham!'          => \(my $ham            = 0),
+
+    'server=s'      => \(my $server),
+    'key=s'         => \(my $key            = 'serotype-test'),
+    'blog-url=s'    => \(my $blog_url       = 'http://example.com'),
+    'user-agent=s'  => \(my $user_agent     = 'Thingy'),
+
+    'type=s'        => \(my $type           = 'comment'),
+
+    'f|content=s'   => \(my $content_file),
+    'ip=s'          => \(my $ip             = '127.0.0.1'),
+    'permalink=s'   => \(my $permalink      = 'http://example.com/post/'.int(rand 1000)),
+    'author=s'      => \(my $author         = 'None'),
+    'email=s'       => \(my $email          = 'user@example.com'),
+    'url=s'         => \(my $url            = 'http://user.com'),
+    'referrer=s'    => \(my $referrer       = 'http://nowhere.com'),
+
+    'help!'         => \(my $help),
+);
+
+if ($help) {
+    my $me = $0; $me =~ s,.*/,,;
+    print <<END_HELP;
+usage: $me [options] <--query|--spam|--ham>
+  Options:
+    --query
+        Ask service whether the object is spam. This is default if another
+        action is not specified.
+    --spam
+        Tell service that the object is spam.
+    --ham
+        Tell service that the object is not spam.
+
+    --server=SERVER
+        URL where service listens.
+    --key=KEY
+        API key to provide to service.
+    --[no-]domainkey
+        If enable, prepend API key to service URL. If not, send key as HTTP
+        header.
+
+    --type=TYPE
+        Comment type, e.g. 'comment', 'trackback', etc.
+
+    --blog-url=URL
+        URL of requesting blog.
+    --permalink=URL
+        Post to which commenter is submitting.
+
+    --content=FILE
+        File containing comment content. If '-', content is read from STDIN.
+    --ip=ADDRESS
+        Commenter's IP address.
+    --author=NAME
+        Commenter's name.
+    --email=EMAIL
+        Commenter's email address.
+    --url=URL
+        Commenter's URL.
+    --user-agent=UA
+        Commenter's user agent.
+    --referrer=REFERRER
+        Referrer provided by commenter.
+
+END_HELP
+    exit;
+}
+
+die 'no server provided' unless $server;
+
+my $content;
+if (!defined $content_file || $content_file eq '-') {
+    local $/ = undef;
+    warn "Enter query content below.\n" if -t STDIN;
+    $content = <STDIN>;
+}
+else {
+    die "can't read file $content_file" unless -r $content_file;
+    open my $content_fh, '<', $content_file or die "couldn't open $content_file: $!\n";
+    local $/ = undef;
+    $content = <$content_fh>;
+}
+
+$query = 1 unless $spam || $ham;
+die "exactly one of --query, --spam, --ham must be supplied\n"
+    if $query+$spam+$ham != 1;
+
+my $service = Net::Akismet::Compat->new(
+    SERVER          => $server,     # host/domain of the server to query
+    KEY             => $key,        # API key. for serotype, arbitrary alphanumeric string up to 64 chars is ok
+    URL             => $blog_url,   # root URL of the blog associated with $key
+    KEY_BY_DOMAIN   => 1
+);
+
+# all args are effectively optional as your query won't break. though the more data you provide, the better the answer
+my %query_args = (
+    COMMENT_TYPE            => $type,       # comment, trackback, etc
+    COMMENT_USER_AGENT      => $user_agent, # User-Agent header provided by the submitter's browser
+    PERMALINK               => $permalink,  # permalink for the entry being posted to
+    USER_IP                 => $ip,         # IP address of the user/server submitting the content
+    COMMENT_CONTENT         => $content,    # content body
+    COMMENT_AUTHOR          => $author,
+    COMMENT_AUTHOR_EMAIL    => $email,
+    COMMENT_AUTHOR_URL      => $url,
+    REFERRER                => $referrer,   # referring page, probably your comment form for most legitimate cases
+);
+
+my $answer;
+eval {
+    $answer =
+        $query ? $service->check(%query_args) :
+        $spam  ? $service->spam(%query_args) :
+        $ham   ? $service->ham(%query_args) :
+                 die "unpossible";
+};
+
+print Dump({
+    answer  => $answer,
+    body    => $service->get_body,
+    headers => {$service->get_headers()},
+});

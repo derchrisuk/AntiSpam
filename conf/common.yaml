@@ -1,0 +1,25 @@
+---
+    include:
+        - log-metadata.yaml
+        - ../sql/statements.yaml
+
+    # backends: which email client backend to use. Presently only dspamc (client-mode dspam) is supported.
+    backend:                dspamc
+    backend_args:
+        # if server starts with '/', it's assumed to be a unix socket (port is ignored); otherwise, a hostname
+        server:             /tmp/dspam.sock
+        port:               24
+        client_id:          Relay1
+        client_pass:        "62120fdbe4b33e"
+        debug:              0
+        train_mode:         toe
+        source:             error
+
+    # name of the backend user for global operation
+    global_username:        serotype
+    # true if backend should use a single dataset for all users
+    global_user_only:       1
+
+    # list of plugins to load in SpamSvc::Serotype::KeyPlugin:: namespace
+    apikey_plugins:
+        - Exempt

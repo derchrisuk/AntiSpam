@@ -1,0 +1,4 @@
+Included here are the versions of dspam and libmemcached used in serotype.
+dspam has modifications to include memcached support in the mysql driver, and a
+clean-restart capability via symlinked domain socket. libmemcached has been
+modified only to make local the GNU autotools build work on our systems.

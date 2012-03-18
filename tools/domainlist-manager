@@ -1,0 +1,135 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Cache::Memcached;
+use Getopt::Long;
+use SpamSvc::Serotype::DB;
+use SpamSvc::DisplayAligned;
+use YAML::Syck;
+
+GetOptions(
+    'black!'        => \(my $black),
+    'white!'        => \(my $white),
+    'preset=s'      => \(my $preset = 'serotype'),
+    'memcached=s@'  => \(my $memcacheds),
+    'purge-mc!'     => \(my $purge_mc),
+    'who=s'         => \(my $who),
+    'why=s'         => \(my $why),
+    'add!'          => \(my $add),
+    'remove!'       => \(my $remove),
+    'show!'         => \(my $show),
+    'g|debug!'      => \(my $debug),
+) || usage();
+
+sub usage {
+    (my $me = $0) =~ s,.*/,,;
+    die <<END_USAGE;
+usage: $me <--black|--white> <domain> [...]
+options:
+  --preset=<serotype|serotype_stage|etc>
+    Serotype database preset to use.
+
+  --memcached=<server:port>
+    One or more memcached servers to update.
+  --purge-mc
+    Remove cache values from specified memcacheds for all specified and parent domains.
+
+  --add|--remove
+    Add or remove the given domains to/from the whitelist.
+  --who=<email/name/whatever>
+    Who is modifying the entry (--add only).
+  --why=<cause>
+    Explanation of why this entry is being modified (--add only).
+END_USAGE
+}
+
+my @domains = @ARGV;
+
+$memcacheds ||= [map {"$_:11211"} qw/
+    sf-spam-app001 sf-spam-app002 sf-spam-app003 sf-spam-app004
+    tp-mem1 tp-mem2 tp-mem3 tp-mem4 sf-tp-mem005 sf-tp-mem006
+/];
+
+$purge_mc = 1 if !defined $purge_mc && ($add || $remove);
+
+die "need --black OR --white\n" if  $black &&  $white;
+die "need --black or --white\n" if !$black && !$white;
+
+my $list = $black ? 'blacklist' : 'whitelist';
+
+my $dbh = SpamSvc::Serotype::DB->connect(preset => $preset);
+
+my $check_sth   = $dbh->prepare("SELECT * FROM domain_$list WHERE domain = ?");
+my $remove_sth  = $dbh->prepare("DELETE   FROM domain_$list WHERE domain = ?");
+my $add_sth     = $dbh->prepare(<<END_SQL);
+    INSERT
+    INTO    domain_$list (added_on, date_id, domain, added_by, reason)
+    SELECT  NOW(),
+            date_id,
+            ?,
+            ?,
+            ?
+    FROM    date_dim
+    WHERE   DATE(NOW()) = date_dim.the_day
+END_SQL
+
+if ($show || !@domains) {
+    my $table = $dbh->selectall_arrayref("SELECT domain, added_on, added_by, reason FROM domain_$list ORDER BY added_on");
+    my $aligner = SpamSvc::DisplayAligned->new(fancy => 1);
+    print $aligner->align($table, ['Domain', 'Added on', 'Added by', 'Reason']);
+    printf "%d entries found.\n", scalar @$table;
+    exit;
+}
+
+if ($add) {
+    die 'no --who!' unless $who;
+    die 'no --why!' unless $why;
+
+    $add_sth->execute($_, $who, $why) for @domains;
+}
+elsif ($remove) {
+    $remove_sth->execute($_) for @domains;
+}
+
+my $any = 0;
+for my $domain (map {parent_domains($_)} @domains) {
+    if ($purge_mc) {
+        my $mc_key = "serotype:$list:$domain";
+        for my $server (@$memcacheds) {
+            my $mc = Cache::Memcached->new({ 'servers' => [$server] });
+            $mc->delete($mc_key);
+            warn "Deleted $mc_key from $server\n" if $debug;
+        }
+    }
+
+    $check_sth->execute($domain);
+    my $row = $check_sth->fetchrow_hashref();
+    if ($row) {
+        $any++;
+        printf <<END_ROW;
+Domain:   $row->{domain}
+Added on: $row->{added_on}
+Added by: $row->{added_by}
+Reason:   $row->{reason}
+
+END_ROW
+        warn Dump($row) if $debug;
+    }
+}
+
+warn "No matches found\n" unless $any;
+
+sub parent_domains {
+    my $host = shift;
+    my @pieces = split /\./, $host;
+    my @formed = (pop @pieces);
+    my @domains;
+    push @domains, $formed[0];
+    while (@pieces) {
+        unshift @formed, pop @pieces;
+        push @domains, join('.', @formed);
+    }
+    return @domains;
+}

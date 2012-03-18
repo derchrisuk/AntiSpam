@@ -1,0 +1,65 @@
+TypePad AntiSpam
+
+TypePad AntiSpam is a plugin that transparently integrates Movable
+Type's junk handling capabilities with Six Apart's collaborative
+spam blocking service.
+
+REQUIREMENTS
+
+TypePad AntiSpam requires a valid API key. The plugin's system
+configuration screen provides a link for obtaining an API
+key.
+
+TypePad AntiSpam requires Movable Type 3.2 or higher. It requires
+a few external modules from CPAN that have been packaged
+along with this plugin. These modules are:
+
+* Class::Accessor which is included 
+* libwww-perl (LWP) library which ships with MT
+
+INSTALLATION
+
+1. Download and unpack the latest TypePad AntiSpam distribution file.
+
+2. Move the files into place.
+
+Where /path/to/mt is the Movable Type application directory, transfer 
+the contents of the following distribution directories to
+
+  plugins    -> mt/plugins
+
+DO NOT replace these directories in MT as they are likely
+to contain other files that your system and other plugins
+need.
+
+NOTICE: TypePad AntiSpam will take advantage of background
+processing if it is enabled on your system and is highly
+recommended. 
+
+LICENSE
+
+This plugin is free software; you can redistribute it and/or
+modify it under the terms of either:
+
+a) the GNU General Public License as published by the Free
+Software Foundation; either version 1, or (at your option)
+any later version,
+
+or
+
+b) the "Artistic License" which comes with this module.
+
+This program is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied
+warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR
+PURPOSE. See either the GNU General Public License or the
+Artistic License for more details.
+
+AUTHOR
+
+TypePad AntiSpam is a slight modification of MT-Akismet developed by 
+Timothy Appnel of Appnel Solutions. 
+
+Copyright 2005-2006, Tim Appnel. All rights reserved.
+Copyright 2007-2008, Six Apart, Ltd.
+

@@ -1,0 +1,115 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Cwd 'abs_path';
+use File::Temp 'tempdir';
+use Getopt::Long;
+use IPC::Open2;
+use Time::HiRes 'time';
+
+GetOptions(
+    'file=s'    => \(my $backup_file),
+    'yes!'      => \(my $yes),
+    'mysql=s'   => \(my $mysql),
+    'user=s'    => \(my $user           = 'root'),
+    'pass=s'    => \(my $pass           = undef),
+    'db=s'      => \(my $database),
+    'atomic!'   => \(my $atomic = 1),
+    'verbose!'  => \(my $verbose = 1),
+    'progress!' => \(my $progress = 1),
+);
+
+die "stdin must be tty" unless $yes || -t STDIN;
+
+$|++;
+
+chomp($mysql = `which mysql`) unless $mysql;
+
+$backup_file = shift if !$backup_file && @ARGV;
+die "no backup file given" unless $backup_file;
+$backup_file = abs_path $backup_file;
+
+if (!$database && $backup_file =~ m{([^/-]+)-[^/]*}) {
+    $database = $1;
+    warn "Database is $database\n";
+}
+
+my $dir = tempdir(CLEANUP => 1);
+
+chmod 0755, $dir;
+
+die "mktemp failed" unless -x $dir;
+chdir $dir;
+
+warn "Unpacking $backup_file to $dir...\n";
+system "cat $backup_file | tar -jxvf - " and die "extraction failed";
+
+my $mysql_cmd = "$mysql -u $user $database";
+$mysql_cmd .= "-p$pass" if $pass;
+
+my (@load_stmts, @replace_stmts, @clean_stmts);
+for my $csv_file (glob "$dir/*/*.csv") {
+    next unless $csv_file =~ m{/([^/.]+)\.csv$};
+    my $table = "$database.$1";
+
+    my $staging = $table . '_staging';
+    my $old = $table . '_old';
+
+    if (`wc -l $csv_file` =~ /^(\d+)/) {
+        printf "Rows in $table: %d\n", ($1 - 1) || 0;
+    }
+
+    (my $desc_file = $csv_file) =~ s/csv$/sql/;
+    if (-r $desc_file) {
+        my @diff = `echo 'SHOW CREATE TABLE $table' | $mysql_cmd | perl -ne 'if (s/^$table.*\t//) { s/\\\\n/\\n/g; print }' | diff $desc_file -`;
+        if (@diff) {
+            printf STDERR "WARNING: definition of $table differs:\n%s\n", join "", @diff;
+        }
+    }
+
+    push @load_stmts,    "DROP TABLE IF EXISTS $staging";
+    push @load_stmts,    "CREATE TABLE $staging LIKE $table";
+    push @load_stmts,    "SELECT NOW() AS 'At:'" if $progress;
+    push @load_stmts,    "SELECT '...load $staging from disk...' as 'About to...'" if $progress;
+    push @load_stmts,    "LOAD DATA INFILE '$csv_file' INTO TABLE $staging IGNORE 1 LINES";
+    push @load_stmts,    "SELECT NOW() AS 'At:'" if $progress;
+    push @load_stmts,    "SELECT COUNT(*) AS 'Rows in $staging =' FROM $staging" if $progress;
+
+    push @replace_stmts, "SELECT NOW() AS 'At:'" if $progress;
+    push @replace_stmts, "SELECT '...swap $staging into $table...' AS 'About to...'" if $progress;
+    push @replace_stmts, "RENAME TABLE $table TO $old, $staging TO $table";
+
+    push @clean_stmts,   "SELECT COUNT(*) AS 'Rows in $table =' FROM $table" if $progress;
+    push @clean_stmts,   "SELECT NOW() AS 'At:'" if $progress;
+    push @clean_stmts,   "SELECT '...drop $old...' AS 'About to...'" if $progress;
+    push @clean_stmts,   "DROP TABLE $old";
+}
+
+@replace_stmts = ("START TRANSACTION", @replace_stmts, "COMMIT");
+
+my $full_sql = join(";\n", join(";\n", @load_stmts), join(";\n", @replace_stmts), join(";\n", @clean_stmts)) . "\n";
+
+chomp(my $host = `hostname`);
+
+my $c = $full_sql; $c =~ s/\n(?!$)/\n    /msg;
+if ($yes) {
+    print "Executing {\n    $c}\n";
+}
+else {
+    print "\nReady to execute {\n    $c} through '$mysql_cmd' on $host? ";
+    my $answer = <STDIN>;
+    exit unless $answer =~ /^y/i;
+    print "Executing...\n";
+}
+
+my $start = time;
+
+open my $mysql_fh, "| $mysql_cmd" or die "couldn't open mysql: $!";
+print $mysql_fh $full_sql;
+close $mysql_fh;
+
+my $end = time;
+
+$verbose && printf "Execution time: %.3fs\n", $end - $start;

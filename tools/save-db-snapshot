@@ -1,0 +1,122 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Getopt::Long;
+use File::Path;
+use File::Temp 'tempdir';
+use IPC::Open2;
+use POSIX 'strftime';
+
+GetOptions(
+    'dir=s'     => \(my $archive_dir    = "$ENV{HOME}/snapshots"),
+    'mysql=s'   => \(my $mysql),
+    'tmpdir=s'  => \(my $tmpdir),
+    'host=s'    => \(my $host),
+    'user=s'    => \(my $user           = 'root'),
+    'pass=s'    => \(my $pass           = undef),
+    'db=s'      => \(my $database),
+    'tables=s@' => \(my $tables),
+    'verbose!'  => \(my $verbose        = 1),
+);
+
+$database = shift @ARGV if @ARGV && !$database;
+
+die "usage: $0 <database>\n" unless $database;
+
+chomp($host = `hostname`);
+$host =~ s/\..*//;
+
+chomp($mysql = `which mysql`) unless $mysql;
+
+$verbose && warn "Using $mysql on $host\n";
+
+$tmpdir ||= tempdir(CLEANUP => 1);
+
+$verbose && warn "Using tempdir $tmpdir\n";
+
+my $date = strftime '%F-%H_%M_%S', localtime time;
+my $dir = "$tmpdir/$date";
+
+mkpath $dir;
+
+my @mysql_cmd = ($mysql, '-u', 'root', (defined $pass ? "-p$pass" : ()), $database);
+
+if (!$tables || !@$tables) {
+    $verbose && warn "Enumerating tables in $database\n";
+
+    my $pid;
+    eval {
+        $pid = open2(*TABLES, *SQL, @mysql_cmd);
+    };
+    $@ && die "failed to open mysql: $@";
+    print SQL "SHOW TABLES;\n";
+    close SQL;
+
+    while (<TABLES>) {
+        chomp;
+        next if /^Tables_in/;
+        push @$tables, $_;
+    }
+
+    waitpid $pid, 0;
+}
+
+backup_table($_) for @$tables;
+
+sub backup_table {
+    my $table = shift;
+
+    $verbose && warn "Dumping table $table\n";
+
+    # schema
+    {
+        my $pid;
+        eval {
+            $pid = open2(*MYSQL, *SQL, @mysql_cmd);
+        };
+        $@ && die "failed to open mysql: $@";
+        print SQL "SHOW CREATE TABLE $table;\n";
+        close SQL;
+
+        open DESC, '>', "$dir/$table.sql" or die "failed to open $dir/$table.sql: $!";
+
+        while (<MYSQL>) {
+            if (s/^$table.*\t//) {
+                s/\\n/\n/g;
+                print DESC $_;
+            }
+        }
+
+        close MYSQL;
+        close DESC;
+
+        waitpid $pid, 0;
+    }
+
+    # table data
+    {
+        open CSV, '>', "$dir/$table.csv" or die "failed to open $dir/$table.csv: $!";
+
+        my $pid;
+        eval {
+            $pid = open2('>&CSV', *SQL, @mysql_cmd);
+        };
+        $@ && die "failed to open mysql: $@";
+        print SQL "SELECT * FROM $table;\n";
+        close SQL;
+
+        close CSV;
+
+        waitpid $pid, 0;
+    }
+    #print $csv_fh $_ while <$read_fh>;
+}
+
+chdir $tmpdir;
+
+mkpath $archive_dir;
+my $archive = "$archive_dir/$database-$host-$date.tar.bz2";
+$verbose && warn "Creating archive $archive\n";
+system 'tar', '-jcf', $archive, $date;

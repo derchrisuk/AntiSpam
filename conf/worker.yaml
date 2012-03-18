@@ -1,0 +1,127 @@
+---
+    include: common.yaml
+
+    # database host config
+    databases:
+        # database for api key permissions and statistics
+        client:
+            host:           localhost
+            port:           3306
+            db:             serotype
+            user:           serotype
+            password:       ""
+            server_prepare: 1
+        # db for storing request data
+        log:
+            host:           localhost
+            port:           3306
+            db:             serotype_log
+            user:           serotype
+            password:       ""
+            server_prepare: 1
+
+    # memcached servers
+    memcached_servers:
+        - localhost:11211
+
+    # YUIDd servers
+    yuid_servers:
+        - localhost:9001
+
+    # gearmand servers
+    gearman_servers:
+        # serotype gearmand is per-app
+        serotype:
+            - localhost:4730
+        # introspector gearmand is per-service
+        introspector:
+            - localhost:4730
+
+    # number of each type of worker to run
+    workers:
+        Query:              4
+        Train:              2
+        Log:                4
+        HealthCheck:        1
+
+    # 256-bit (64 hex chars) key for encoding request IDs
+    id_crypto_key:          b6b1b071b6581f54f3a14a6955bbb6bfa01387d3f5d22ab8cb031e6a8db083fa
+
+    trackback:
+        # HTTP timeout
+        fetch_timeout:      10
+
+    debug:
+
+        # generates a syslog message every time Query/Train/Log worker starts a job
+        - log_worker_entry
+
+        # causes loud cluck on any database error
+        - database
+
+        # writes to stderr on most local/memcache lookups; extremely noisy
+        - cache_hits
+
+    # determines which bits of data to include in log events. specify either
+    # 'all', 'none', or a list composed of 'metadata', 'body', 'other',
+    # and 'factors'
+    log: all
+
+    # configuration for hard-coded rules. 'mode' may be 'hard' to
+    # unconditionally accept/reject, or soft to contribute a factor for
+    # statistical consideration. 'config' is opaque config passed to the rule.
+    rules:
+
+        # very short messages with no url are ok
+        brief:
+            mode:           soft
+            factor:         Brief
+            settings:
+                max_length: 100
+
+    # reputation scales from 0-1
+    reputation:
+        # backend will only train when user's trust is above the threshold (value in memcached can override this)
+        default_threshold:  0.9
+        # minimum (and default) trust value
+        minimum:            0.001
+
+    # workers will expire themselves after performing this many jobs (to prevent slow perl leaks)
+    max_jobs:               1000
+
+    domain_lists:
+        # how often to check again for host that was    on a list
+        exists_expiry:      3600
+        # how often to check again for host that wasn't on a list
+        missing_expiry:     300
+        # if true, presence of blacklisted domain in url field triggers spam rating
+        hard_blacklist:     1
+
+    # rate limiter.  object will flagged as spam if that score exceeds
+    # the hard_limit at the time of submission. see FrequencyTracker.pm for a
+    # table of potentially useful limits.
+    frequency:
+        comment_content:
+            halflife:       60
+            min_length:     20
+            hard_limit:     20
+            store_hashed:   1
+        comment_author_url:
+            halflife:       60
+            min_length:     20
+            hard_limit:     20
+            store_hashed:   1
+        user_ip:
+            halflife:       60
+            min_length:     20
+            hard_limit:     20
+            store_hashed:   0
+
+    # confidence at or above this threshold sends 'X-Spam-Certain: true'
+    certainty_threshold:    0.80
+
+    # size of local cache
+    local_cache_size:       50000
+
+    # time between async health checks
+    health_check_period:    60

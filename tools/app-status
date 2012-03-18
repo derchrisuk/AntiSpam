@@ -1,0 +1,262 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Date::Parse;
+use Getopt::Long;
+use IO::Socket::INET;
+use List::Util 'max';
+use LWP::Simple;
+use POSIX 'strftime';
+use SpamSvc::DisplayAligned;
+
+GetOptions(
+    'mc!'       => \(my $memcache),
+    'pretty!'   => \(my $pretty = 1),
+    'html!'     => \(my $html = 0),
+);
+
+my @hosts = @ARGV;
+
+push @hosts, 'localhost:23459' unless @hosts;
+
+my @order = qw/
+host
+version revision built age
+date time uptime
+period events throughput
+min_elapsed median_elapsed mean_elapsed max_elapsed
+errors fatals success_rate since_fatal
+sys_uptime sys_load1 sys_load5 sys_load15 free_physical free_swap
+/;
+# ident
+
+my %html_sections = (
+    version       => 'Release',
+    date          => 'Ping',
+    period        => 'Recent',
+    min_elapsed   => 'Performance',
+    errors        => '<a href="/antispam/cgi/sniff-app-logs">Errors</a>',
+    sys_uptime    => 'Health',
+);
+
+if ($memcache) {
+    push @order, qw/ mc_uptime mc_hits mc_misses mc_full mc_gets mc_sets /;
+    $html_sections{mc_uptime} = 'Memcached';
+}
+
+my %units = (
+    age             => 'interval',
+    uptime          => 'interval',
+    errors          => 'count',
+    fatals          => 'count',
+    events          => 'count',
+    period          => 'interval',
+    since_fatal     => 'interval',
+    throughput      => '/s',
+    success_rate    => 'percent',
+    min_elapsed     => 'ms',
+    median_elapsed  => 'ms',
+    mean_elapsed    => 'ms',
+    max_elapsed     => 'ms',
+    sys_uptime      => 'interval',
+    sys_load1       => '%.2f',
+    sys_load5       => '%.2f',
+    sys_load15      => '%.2f',
+);
+
+my %stats;
+for my $host (@hosts) {
+    my $s = $stats{$host} ||= {};
+    $s->{host} = $host;
+    $s->{host} =~ s,\..*,,;
+
+    my $url = "http://$host/status";
+    my $page = get $url;
+    next unless $page;
+
+    my %host_stats = $page =~ /(\S+)=(.+)$/mg;
+    $s->{$_} = $host_stats{$_} for @order;
+
+    $s->{host} = $host;
+    $s->{host} =~ s,\..*,,;
+
+    $s->{date} = strftime '%F', localtime int $host_stats{now};
+    $s->{time} = strftime '%r', localtime int $host_stats{now};
+    $s->{time} =~ s/^0/ /;
+
+    if (defined $s->{revision} && $s->{revision} =~ /^\$Revision: (\d+)/) {
+        $s->{revision} = "r$1";
+    }
+    if (defined $s->{built} && $s->{built} =~ /\$Date: ([\d-]+ [\d:]+)/) {
+        my $built = $1;
+        $s->{built} = $built;
+        $s->{age} = time - str2time($built);
+    }
+    if (defined $host_stats{freemem} && defined $host_stats{totalmem}) {
+        $s->{free_physical} = memratio($host_stats{freemem}, $host_stats{totalmem});
+    }
+    if (defined $host_stats{freeswap} && defined $host_stats{totalswap}) {
+        $s->{free_swap} = memratio($host_stats{freeswap}, $host_stats{totalswap});
+    }
+
+    for my $stat (keys %units) {
+        if (!defined $s->{$stat}) {
+            $s->{$stat} = 'n/a';
+        }
+        elsif ($units{$stat} eq 'count') {
+            $s->{$stat} = commify($s->{$stat})
+        }
+        elsif ($units{$stat} eq 'interval') {
+            $s->{$stat} = printable_interval($s->{$stat})
+        }
+        elsif ($units{$stat} eq 'percent') {
+            $s->{$stat} = $s->{$stat} . '%';
+        }
+        elsif ($units{$stat} =~ /%/) {
+            $s->{$stat} = sprintf $units{$stat}, $s->{$stat};
+        }
+        else {
+            $s->{$stat} .= $units{$stat};
+        }
+    }
+
+    if ($memcache) {
+        my $peer = $host =~ /:/ ? $host : "$host:11211";
+
+        my $sock = IO::Socket::INET->new(PeerAddr => $peer);
+        unless ($sock) {
+            warn "Failed to connect to $peer: $!\n";
+            next;
+        }
+        print $sock "stats\nquit\n";
+
+        my %data;
+        while (<$sock>) {
+            $data{$host}{$1} = $2 if /STAT \s+ (\S+) \s+ (\d+)/x;
+        }
+
+        my $total = ($data{$host}{get_hits}+$data{$host}{get_misses}) || 1;
+
+        $s->{mc_uptime} = printable_interval($data{$host}{uptime});
+
+        $s->{mc_hits} = sprintf "%6.2f%% (%s)",
+            100*$data{$host}{get_hits}/$total,
+            commify($data{$host}{get_hits});
+
+        $s->{mc_misses} = sprintf "%6.2f%% (%s)",
+            100*$data{$host}{get_misses}/$total,
+            commify($data{$host}{get_misses});
+
+        $s->{mc_full} = memratio(
+            $data{$host}{bytes},
+            $data{$host}{limit_maxbytes}
+        );
+
+        $s->{mc_gets} = sprintf "%5.1f/s (%s)",
+            $data{$host}{cmd_get}/$data{$host}{uptime},
+            commify($data{$host}{cmd_get});
+
+        $s->{mc_sets} = sprintf "%5.1f/s (%s)",
+            $data{$host}{cmd_set}/$data{$host}{uptime},
+            commify($data{$host}{cmd_set});
+    }
+}
+
+my @table;
+my $not_first = 0;
+for my $key (@order) {
+    my $pkey = ucfirst $key;
+    $pkey =~ tr/_/ /;
+    my @row = ($pkey);
+
+    if ($html) {
+        push @table, ['&nbsp'] if $html && $html_sections{$key} && $not_first++;
+        unshift @row,
+            exists $html_sections{$key}
+                ? "<strong>$html_sections{$key}</strong>"
+                : '';
+    }
+
+    for my $host (@hosts) {
+        my $value = $stats{$host}{$key};
+        $value = 'unknown' unless defined $value;
+        push @row, $value;
+    }
+    push @table, \@row;
+}
+
+my $header = shift @table;
+my $aligner = SpamSvc::DisplayAligned->new(fancy => $pretty);
+if ($html) {
+    print $aligner->generate_html(\@table, $header);
+}
+else {
+    print $aligner->align(\@table, $header);
+}
+
+sub printable_interval {
+    my $t = shift; # seconds
+    my $secs = int($t % 60);
+    $t = ($t-$secs) / 60; # minutes
+    my $mins = int($t % 60);
+    $t = ($t-$mins) / 60; # hours
+    my $hours = int($t % 24);
+    $t = ($t-$hours) / 24; # days
+    my $days = int($t % 7);
+    $t = ($t-$days) / 7; # weeks
+    my $weeks = int $t;
+
+    my $buf = '';
+    $buf = sprintf '%' . ($mins  ? '02' : '' ) . 'ds',    $secs;
+    $buf = sprintf '%' . ($hours ? '02' : '' ) . 'dm %s', $mins,    $buf if $mins;
+    $buf = sprintf '%' . ($days  ? '02' : '' ) . 'dh %s', $hours,   $buf if $hours;
+    $buf = "<br />$buf" if $html && ($days || $weeks);
+    $buf = sprintf '%d day%s, %s',  $days,  ($days==1 ? '' : 's'),  $buf if $days;
+    $buf = sprintf '%d week%s, %s', $weeks, ($weeks==1 ? '' : 's'), $buf if $weeks;
+    $buf =~ s/\s+<br/<br/g;
+    return $buf;
+}
+
+sub commify {
+    my $str = shift;
+    1 while $str =~ s/^(\d+)(\d{3})/$1,$2/;
+    return $str;
+}
+
+sub byte_measure {
+    my %domains = (
+        0 => '',
+        1 => 'KB',
+        2 => 'MB',
+        3 => 'GB',
+        4 => 'TB',
+    );
+
+    my $value = shift;
+    my $domain = 0;
+    while ($value > 1024*.9) {
+        $value /= 1024;
+        $domain++;
+    }
+    my $digits = max(0, 2 - int(log($value||1)/log(10)));
+    if ($domain) {
+        return sprintf "%.${digits}f%s", $value, $domains{$domain};
+    }
+    else {
+        return "$value";
+    }
+}
+
+sub memratio {
+    my $part = shift;
+    my $whole = shift;
+    if ($html) {
+        #return sprintf "%s/%s (%.1f%%)", byte_measure($part), byte_measure($whole), 100*$part/$whole;
+        return sprintf "%s/%s", byte_measure($part), byte_measure($whole);
+    }
+    else {
+        return sprintf "%s/%s (%.1f%%)", byte_measure($part), byte_measure($whole), 100*$part/$whole;
+    }
+}

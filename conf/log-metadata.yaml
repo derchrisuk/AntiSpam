@@ -1,0 +1,27 @@
+---
+log_meta_props:
+
+    provisional_id:
+        index: 1
+        type: string
+
+    captcha_passed:
+        index: 2
+        type: boolean
+
+    system_action:
+        index: 3
+        type: enum
+        enum:
+            1: discard
+            2: quarantine
+            3: accept
+
+    user_action:
+        index: 4
+        type: enum
+        enum:
+            1: publish
+            2: unpublish
+            3: junk
+            4: delete
